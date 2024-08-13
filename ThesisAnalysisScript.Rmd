@@ -1,0 +1,486 @@
+---
+title: "ThesisAnalysisScript"
+output: html_document
+date: "2024-06-18"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+install.packages('tidyverse')
+install.packages('ggpubr')
+install.packages('rstatix')
+install.packages('kableExtra')
+install.packages('papaja')
+
+
+
+```{r libraries}
+library(tidyverse)
+library(ggpubr)
+library(rstatix)
+library(kableExtra)
+library(papaja)
+library(readr)
+library(stats)
+library(apaTables)
+library(broom)
+library(knitr)
+library(flextable)
+library(officer)
+library(car)
+library(statmod)
+library(glmmTMB)
+library(lme4)
+library(bestNormalize)
+library(glmmTMB)
+library(effects)
+library(ggplot2)
+library(sjPlot)
+library(ggeffects)
+library(multcompView)
+```
+
+```{r load data}
+male_stim_data <- read.csv('G:/Experiment/Experiment/male_stim_data.csv')
+female_stim_data <- read.csv('G:/Experiment/Experiment/female_stim_data.csv')
+all_stim_data <- read.csv('G:/Experiment/Experiment/cleaned_data_removed_ratings.csv')
+ratings_data <- read.csv('G:/Experiment/Experiment/ratings_data_cleaned.csv')
+```
+
+```{r Group SRTs by person, means}
+all_stim_data$attractiveness_difference <- all_stim_data$Attractiveness.response - all_stim_data$counterpart_attractiveness
+
+all_stim_data$target <- factor(all_stim_data$target, 
+                                    levels = c("Distinctive", "Average", 
+                                               "Asymmetrical", "Symmetrical", 
+                                               "Low Dimorphism", "High Dimorphism"))
+
+# Calculate the standard error for each target type
+se_attractiveness <- all_stim_data %>%
+  group_by(target, participant) %>%
+  summarise(mean_attractiveness = mean(attractiveness_difference, na.rm = TRUE),
+            sd_attractiveness = sd(attractiveness_difference, na.rm = TRUE),
+            n = n(),
+            se_attractiveness = sd_attractiveness / sqrt(n))
+
+se_SaccadicRTms <- all_stim_data %>%
+  group_by(target, participant) %>%
+  summarise(mean_SaccadicRTms = mean(SaccadicRTms, na.rm = TRUE),
+            sd_SaccadicRTms = sd(SaccadicRTms, na.rm = TRUE),
+            n = n(),
+            se_SaccadicRTms = sd_SaccadicRTms / sqrt(n))
+
+mean_srt_by_participant <- all_stim_data %>%
+  group_by(participant, target, targetsex) %>%
+  summarise(mean_SRT = mean(SaccadicRTms, na.rm = TRUE))
+
+mean_attractiveness_by_participant <- all_stim_data %>%
+  group_by(participant, target, targetsex) %>%
+  summarise(mean_attractiveness = mean(attractiveness_difference, na.rm = TRUE))
+
+mean_beauty_by_participant <- all_stim_data %>%
+  group_by(participant, target, targetsex) %>%
+  summarise(mean_beauty = mean(Beauty.response, na.rm = TRUE))
+
+anovadatameans <- mean_attractiveness_by_participant %>%
+  left_join(mean_beauty_by_participant, by = c("participant", "target", "targetsex")) %>%
+  left_join(mean_srt_by_participant, by = c("participant", "target", "targetsex"))
+
+anovadatameans <- as.data.frame(anovadatameans)
+# Print the result
+
+print(mean_srt_by_participant)
+
+
+```
+
+```{r Descriptives}
+
+anovadatameans %>% group_by(target, targetsex) %>% get_summary_stats(mean_SRT, type = 'mean_sd')
+
+bxp <- ggboxplot(all_stim_data, x = 'target', y = 'SaccadicRTms', color = 'targetsex', palette = 'jco')
+
+bxp2 <- ggboxplot(all_stim_data, x = 'targetsex', y = 'SaccadicRTms', color = 'target', palette = 'jco')
+
+bxp3 <- ggboxplot(anovadatameans, x = 'target', y = 'mean_attractiveness', color = 'targetsex', palette = 'jco')
+
+bxp4 <- ggboxplot(anovadatameans, x = 'target', y = 'mean_beauty', color = 'targetsex', palette = 'jco')
+
+bxp5 <- ggboxplot(anovadatameans, x = 'mean_attractiveness', y = 'mean_SRT', color = 'targetsex', palette = 'jco')
+
+bxp6 <- ggboxplot(anovadatameans, x = 'mean_beauty', y = 'mean_SRT', color = 'targetsex', palette = 'jco')
+
+bxp
+bxp2
+bxp3
+bxp4
+
+```
+
+```{r No Significant Outliers assumption}
+outliers <- anovadatameans %>% identify_outliers(mean_SRT)
+
+outliers
+
+# Filter out the identified outliers
+anovadatameans<- anovadatameans %>%
+  anti_join(outliers %>% filter(is.outlier), by = c("participant", "target", "targetsex"))
+
+
+```
+
+```{r Normality assumption}
+# Build the linear model
+model  <- lm(SaccadicRTms ~ target*targetsex,
+             data = all_stim_data)
+# Create a QQ plot of residuals
+ggqqplot(residuals(model))
+
+best_norm <- bestNormalize(anovadatameans$mean_SRT, methods = c("inv_gauss"))
+
+# Extract the normalized data
+anovadatameans$saccadic_rt_inv_gauss <- best_norm$x.t
+
+
+best_norm2 <- bestNormalize(all_stim_data$SaccadicRTms, methods = c("inv_gauss"))
+
+# Extract the normalized data
+all_stim_data$saccadic_rt_inv_gauss <- best_norm2$x.t
+
+all_stim_data$saccadic_rt_log <- log(all_stim_data$SaccadicRTms)
+
+
+model2  <- lm(saccadic_rt_inv_gauss ~ target*targetsex,
+             data = anovadatameans)
+
+model3  <- lm(saccadic_rt_inv_gauss ~ target*targetsex,
+             data = all_stim_data)
+# Create a QQ plot of residuals
+ggqqplot(residuals(model3))
+ggqqplot(residuals(model2))
+
+```
+
+```{r plots per target}
+ggqqplot(anovadatameans, "mean_SRT", ggtheme = theme_bw()) +
+  facet_grid(target ~ targetsex)
+
+```
+
+
+```{r Homogeneity of variances assumption}
+#levenes test
+# Ensure the columns are correctly converted to factors
+mean_srt_by_participant <- anovadatameans %>%
+  mutate(target = as.factor(target),
+         targetsex = as.factor(targetsex))
+
+# Check for missing values in relevant columns
+missing_values <- colSums(is.na(mean_srt_by_participant[, c("mean_SRT", "target", "targetsex")]))
+print(missing_values)
+
+# Perform Levene's Test on cleaned data
+levene_test_result <- anovadatameans %>%
+  levene_test(saccadic_rt_inv_gauss ~ target * targetsex)
+
+# Print the result
+print(levene_test_result)
+```
+
+
+```{r}
+
+all_stim_data$target <- as.factor(all_stim_data$target)
+all_stim_data$target <- relevel(all_stim_data$target, ref = 'Distinctive')
+# Assuming the original target variable has more than two levels or needs recoding
+symdata <- all_stim_data %>% 
+          filter(target %in% c("Symmetrical", "Asymmetrical"))
+avgdata <- all_stim_data %>% 
+          filter(target %in% c("Average", "Distinctive"))
+dimorphdata <- all_stim_data %>% 
+          filter(target %in% c("Low Dimorphism", "High Dimorphism"))
+
+symdata$target <- relevel(symdata$target, ref = 'Asymmetrical')
+avgdata$target <- relevel(avgdata$target, ref = 'Distinctive')
+dimorphdata$target <- relevel(dimorphdata$target, ref = 'Low Dimorphism')
+
+symdata <- symdata %>% filter(SaccadicRTms < 1000)
+
+ratings_data$image_type <- as.factor(ratings_data$image_type)
+ratings_data$image_type <- relevel(ratings_data$image_type, ref = 'Original')
+
+
+levels(all_stim_data$target)
+
+model_stepwise3 <- glmer(SaccadicRTms ~  target + (1 | participant) + (1 | l_image), 
+                         data = all_stim_data, 
+                         family = inverse.gaussian(link = "identity"),
+                         control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 100000)))
+
+model_stepwise4 <- glmer(SaccadicRTms ~ attractiveness_difference + (1 | participant) + (1 | l_image), 
+                         data = all_stim_data, 
+                         family = inverse.gaussian(link = "identity"),
+                         control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 100000)))
+
+model_stepwiseratings <- lmer(attractiveness_difference ~ image_type + (1 | ID), 
+                         data = ratings_data)
+
+
+model_Symm <- glmer(SaccadicRTms ~ target + (1 | participant) + (1 | l_image), 
+                         data = symdata, 
+                         family = inverse.gaussian(link = "identity"),
+                         control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 100000)))
+
+model_avg <- glmer(SaccadicRTms ~ target + (1 | participant) + (1 | l_image), 
+                         data = avgdata, 
+                         family = inverse.gaussian(link = "identity"),
+                         control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 100000)))
+
+model_dimorph <- glmer(SaccadicRTms ~ target*targetsex + (1 | participant) + (1 | l_image), 
+                         data = dimorphdata, 
+                         family = inverse.gaussian(link = "identity"),
+                         control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 100000)))
+
+model_summary <-summary(model_stepwise3)
+
+model_summary
+
+model_summaryratings <-summary(model_stepwiseratings)
+
+anova_ratings <- anova(model_stepwiseratings)
+
+summary(anova_ratings)
+
+model_summaryratings
+
+model_summary2 <-summary(model_stepwise4)
+
+model_summary2
+
+model_summarysym <-summary(model_Symm)
+
+model_summarysym
+
+model_summaryavg <-summary(model_avg)
+
+model_summaryavg
+model_summarydimorph <-summary(model_dimorph)
+
+model_summarydimorph
+
+```
+
+```{r}
+ratings_data$attractiveness_difference <- ratings_data$Attractiveness.response - ratings_data$counterpart_attractiveness
+
+ratings_data$Attractiveness.response <- na.omit(ratings_data$Attractiveness.response)
+
+anova_model <- lm(attractiveness_difference ~ image_type, data = ratings_data)
+
+anova_results <- anova(anova_model)
+
+print(anova_results)
+
+
+# Perform Tukey's HSD test
+tukey_results <- TukeyHSD(aov(anova_model))
+
+# Print the results
+print(tukey_results)
+```
+
+```{r}
+
+# Generate predicted values for each target using the mean values
+all_stim_data$predicted_SaccadicRTms <- predict(model_stepwise3, re.form = NA)
+
+predictedplot <- ggplot(all_stim_data, aes(x = target, y = SaccadicRTms)) +
+  geom_bar(stat = "summary", fill = "lightblue", color = "black") +
+  geom_errorbar(stat='summary', width=.2) +
+  ggtitle("Mean Saccadic Reaction Time (ms) for Each Target") +
+  theme_minimal(base_size = 15) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.title = element_text(hjust = 0.5)
+  ) +
+  labs(x = "Target", y = "Mean Saccadic Reaction Time (ms)") + 
+  coord_cartesian(ylim = c(300,370)) + 
+  theme_pubclean()
+
+predictedplot2 <- ggplot(all_stim_data, aes(x = target, y = attractiveness_difference)) +
+  geom_bar(stat = 'summary', fill = "lightblue", color = "black") + geom_errorbar(stat='summary', width=.2) +
+  ggtitle("Mean attractiveness difference for each target type and their pair") +
+  theme_minimal(base_size = 15) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.title = element_text(hjust = 0.5)
+  ) +
+  labs(x = "Target", y = "Mean attractiveness difference") + coord_cartesian(ylim = c(-0.75,0.75)) + theme_pubclean()
+
+ggsave("Predicted Saccadic Reaction Time (ms) for Each Target plot.pdf", plot = predictedplot, width = 8, height = 6)
+ggsave("mean_attractivness_difference_Plot.pdf", plot = predictedplot2, width = 8, height = 6)
+
+
+
+
+predictedplot
+predictedplot2
+
+```
+
+
+
+```{r}
+anova_results <- aov(Attractiveness.response ~ image_type,
+                  data = ratings_data )
+
+summary(anova_results)
+
+# Perform Tukey's HSD test
+tukey_results <- TukeyHSD(anova_results, "image_type")
+
+# Convert Tukey HSD results to a data frame
+tukey_df <- as.data.frame(tukey_results$image_type)
+
+
+t_test_result <- t.test(ratings_data$Attractiveness.response, ratings_data$Beauty.response, paired = TRUE)
+
+# Print the result
+print(t_test_result)
+
+```
+
+```{r}
+# Add a comparison column
+tukey_df$Comparison <- rownames(tukey_df)
+rownames(tukey_df) <- NULL
+
+# Reorder columns
+tukey_df <- tukey_df %>% select(Comparison, diff, lwr, upr, `p adj`)
+
+# Rename columns for APA style
+colnames(tukey_df) <- c("Comparison", "Difference", "Lower CI", "Upper CI", "p-value")
+
+# Create APA style table for Tukey HSD results using flextable
+tukey_flextable <- flextable(tukey_df) %>%
+  colformat_double(j = c("Difference", "Lower CI", "Upper CI"), digits = 2) %>%
+  colformat_double(j = "p-value", digits = 3) %>%
+  set_caption("Tukey HSD Pairwise Comparisons") %>%
+  theme_vanilla()
+
+# Extract fixed effects from model summary
+fixed_effects <- as.data.frame(model_summary$coefficients)
+fixed_effectssym <- as.data.frame(model_summarysym$coefficients)
+fixed_effectsavg <- as.data.frame(model_summaryavg$coefficients)
+fixed_effectsdimorph <- as.data.frame(model_summarydimorph$coefficients)
+
+# Add predictor names
+fixed_effects$Predictor <- rownames(fixed_effects)
+fixed_effectsdimorph$Predictor <- rownames(fixed_effectsdimorph)
+rownames(fixed_effects) <- NULL
+rownames(fixed_effectsdimorph) <- NULL
+
+# Rename columns for clarity
+names(fixed_effects) <- c("Estimate", "StdError", "zValue", "pValue", "Predictor")
+names(fixed_effectssym) <- c("Estimate", "StdError", "zValue", "pValue")
+names(fixed_effectsavg) <- c("Estimate", "StdError", "zValue", "pValue")
+names(fixed_effectsdimorph) <- c("Estimate", "StdError", "zValue", "pValue","Predictor")
+
+# Reorder columns
+fixed_effects <- fixed_effects %>% select(Predictor, Estimate, StdError, zValue, pValue)
+fixed_effectssym <- fixed_effectssym %>% select( Estimate, StdError, zValue, pValue)
+fixed_effectsavg <- fixed_effectsavg %>% select( Estimate, StdError, zValue, pValue)
+fixed_effectsdimorph <- fixed_effectsdimorph %>% select(Predictor ,Estimate, StdError, zValue, pValue)
+
+# Create APA style table for model results using flextable
+model_flextable <- flextable(fixed_effects) %>%
+  colformat_double(j = c("Estimate", "StdError", "zValue"), digits = 2) %>%
+  colformat_double(j = "pValue", digits = 3) %>%
+  set_caption("Model Results") %>%
+  theme_vanilla()
+
+modelsym_flextablesym <- flextable(fixed_effectssym) %>%
+  colformat_double(j = c("Estimate", "StdError", "zValue"), digits = 2) %>%
+  colformat_double(j = "pValue", digits = 3) %>%
+  set_caption("Model Results Symmetry") %>%
+  theme_vanilla()
+
+modelavg_flextableavg <- flextable(fixed_effectsavg) %>%
+  colformat_double(j = c("Estimate", "StdError", "zValue"), digits = 2) %>%
+  colformat_double(j = "pValue", digits = 3) %>%
+  set_caption("Model Results Averageness") %>%
+  theme_vanilla()
+
+modeldimorph_flextabledimorph <- flextable(fixed_effectsdimorph) %>%
+  colformat_double(j = c("Estimate", "StdError", "zValue"), digits = 2) %>%
+  colformat_double(j = "pValue", digits = 3) %>%
+  set_caption("Model Results Sexual Dimorphism") %>%
+  theme_vanilla()
+
+
+# Create a Word document
+doc <- read_docx() %>%
+  body_add_par("Tukey HSD Pairwise Comparisons", style = "heading 1") %>%
+  body_add_flextable(tukey_flextable) %>%
+  body_add_par("Model Results", style = "heading 1") %>%
+  body_add_flextable(model_flextable) %>%
+  body_add_par("Symmetrical Model Results", style = "heading 2") %>%
+  body_add_flextable(modelsym_flextablesym) %>%
+  body_add_par("Average Model Results", style = "heading 2") %>%
+  body_add_flextable(modelavg_flextableavg) %>%
+  body_add_par("Dimorphism Model Results", style = "heading 2") %>%
+  body_add_flextable(modeldimorph_flextabledimorph)
+
+
+# Save the Word document
+print(doc, target = "model_results.docx")
+```
+
+
+```{r Attractiveness / beauty regression}
+# Simple linear regression: attractiveness.response predicting saccadic RTms
+model1 <- lm(SaccadicRTms ~ attractiveness_difference, data = all_stim_data)
+summary(model1)
+
+# Simple linear regression: beauty.response predicting saccadic RTms
+model2 <- lm(mean_SRT ~ mean_beauty, data = anovadatameans)
+summary(model2)
+
+# Multiple linear regression: both predictors
+model3 <- lm(mean_SRT ~ mean_attractiveness + mean_beauty, data = anovadatameans)
+summary(model3)
+
+```
+```{r}
+# Plotting the relationships
+plotattractiveness_vs_SRT <- ggplot(all_stim_data, aes(x = attractiveness_difference, y = SaccadicRTms)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  ggtitle("Saccadic RTms vs mean attractiveness difference between the two targets")
+
+plotbeauty_vs_SRT <- ggplot(anovadatameans, aes(x = mean_beauty, y = mean_SRT)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  ggtitle("Saccadic RTms vs Attractiveness Response")
+
+plot_distribution_SRT_target_violin <-ggplot(all_stim_data, aes(x = target, y = SaccadicRTms, color = targetsex)) +
+  geom_violin() +
+  ggtitle("Saccadic RTms vs Attractiveness Response") +
+  theme_minimal() +
+  labs(x = "target type", y = "Saccadic Reaction Time (ms)") +
+  ylim(0, 1700)
+
+ggsave("plotattractiveness_vs_SRT.pdf", plot = plotattractiveness_vs_SRT, width = 8, height = 6)
+ggsave("plotbeauty_vs_SRT.pdf", plot = plotbeauty_vs_SRT, width = 8, height = 6)
+ggsave("plot_distribution_SRT_target_violin.pdf", plot = plot_distribution_SRT_target_violin, width = 8, height = 6)
+
+write.csv(all_stim_data, file = 'G:/Experiment/all_stim_data_end.csv', row.names = F)
+
+
+
+```
+
+

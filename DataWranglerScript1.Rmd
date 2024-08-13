@@ -1,0 +1,751 @@
+---
+title: "Thesis Analysis Script"
+output: html_document
+date: "2024-06-17"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+{r install packages}
+install.packages("readxl")
+install.packages("purrr")
+install.packages("dplyr")
+install.packages('stringr')
+
+
+library(purrr)
+library(readxl)
+library(dplyr)
+library(stringr)
+library(kableExtra)
+```{r}
+library(purrr)
+library(readxl)
+library(dplyr)
+library(stringr)
+library(kableExtra)
+```
+
+
+
+```{r Loading Data}
+# Load necessary libraries
+library(dplyr)
+library(readr)
+
+# Initialize an empty list to store data frames
+datasets <- list()
+
+# Set directory path as object to reference
+folder_path <- "G:/Experiment/Experiment/data"
+
+# Get a list of CSV files in the folder
+file_list <- list.files(path = folder_path, pattern = "\\.csv$", full.names = TRUE)
+
+# Loop through each file, read it into a data frame, and store in the list
+for (file in file_list) {
+  # Create a name for the data frame by extracting the file name without extension
+  df_name <- tools::file_path_sans_ext(basename(file))
+  
+  # Read the CSV file and assign it to a data frame
+  df <- read_csv(file)
+  
+  # Add a 'participant' column to indicate the source of the data
+  df <- df %>% mutate(participant = df_name)
+  
+  # Store the data frame in the list
+  datasets[[df_name]] <- df
+}
+
+# Find common columns across all data frames
+common_cols <- Reduce(intersect, lapply(datasets, colnames))
+
+# Ensure that each common column has the same type across all data frames
+for (col in common_cols) {
+  col_types <- sapply(datasets, function(df) class(df[[col]]))
+  if (length(unique(col_types)) > 1) {
+    # Convert all to character if they have different types
+    datasets <- lapply(datasets, function(df) {
+      df[[col]] <- as.character(df[[col]])
+      return(df)
+    })
+  }
+}
+
+# Combine all data frames in the list into one data frame
+combined_df <- bind_rows(datasets)
+
+#modify order of columns 
+combined_df <- combined_df %>% select(participant, everything())
+
+# Print the combined data frame
+print(combined_df)
+
+
+
+```
+
+```{r remove NA}
+
+initial_row_count <- nrow(combined_df)
+cat("Initial row count:", initial_row_count, "\n")
+
+# Remove non-trial rows
+cleaned_data <- combined_df %>% filter(!is.na(trial))
+rows_after_trial_filter <- nrow(cleaned_data)
+cat("Rows removed as they did not correspond to a trial:", initial_row_count - rows_after_trial_filter, "\n")
+
+# Remove practice trials
+cleaned_data <- cleaned_data %>% filter(!(is.na(l_image) & is.na(beauty_text.started)))
+rows_after_practice_filter <- nrow(cleaned_data)
+cat("Rows removed by practice filter:", rows_after_trial_filter - rows_after_practice_filter, "\n")
+
+# Final row count
+cat("Final row count:", rows_after_practice_filter, "\n")
+
+```
+
+
+```{r Data Cleaning}
+initial_row_count <- nrow(cleaned_data)
+cat("Initial row count:", initial_row_count, "\n")
+
+# Convert 'roi_targ2.timesOff' and 'roi_targ2.timesOn' to numeric
+cleaned_data <- cleaned_data %>%
+  mutate(
+    roi_targ2.timesOn = as.numeric(roi_targ2.timesOn)
+  )
+
+# Remove rows where either 'roi_targ2.timesOff' or 'roi_targ2.timesOn' are NA after conversion
+cleaned_data <- cleaned_data %>%
+  filter(!is.na(roi_targ2.timesOn))
+
+rows_after_trial_filter <- nrow(cleaned_data)
+cat("Rows removed as roi_targ2.timeOn was NA Value :", initial_row_count - rows_after_trial_filter, "\n")
+
+# Calculate 'SaccadicRT' and reorder columns
+cleaned_data <- cleaned_data %>%
+  mutate(SaccadicRTms = roi_targ2.timesOn * 1000) %>%
+  select(participant, SaccadicRTms, everything())
+
+row_count = nrow(cleaned_data)
+
+cat("Final row count:", row_count, "\n")
+
+
+```
+
+```{r smaller df}
+#create df with only the columns we need 
+cleaned_data_small <- cleaned_data %>% select(participant, trial, TargX, DistX, l_image, r_image, roi_targ2.timesOn, roi_targ2.timesOff,SaccadicRTms)
+```
+
+
+########## Not applying this section as the Valuch et al paper did not do this######################
+{r Remove outliers}
+initial_row_count <- nrow(cleaned_data_small)
+cat("trial count:", initial_row_count, "\n")
+
+# Calculate Q1 (25th percentile) and Q3 (75th percentile)
+Q1 <- quantile(cleaned_data_small$SaccadicRTms, 0.25)
+Q3 <- quantile(cleaned_data_small$SaccadicRTms, 0.75)
+
+# Calculate IQR (Interquartile Range)
+IQR <- Q3 - Q1
+
+# Define lower and upper bounds for outliers
+lower_bound <- Q1 - 1.5 * IQR
+upper_bound <- Q3 + 1.5 * IQR
+
+# Filter out the outliers
+cleaned_data_small <- cleaned_data_small[cleaned_data_small$SaccadicRTms >= lower_bound & cleaned_data_small$SaccadicRTms <= upper_bound, ]
+
+rows_after_trial_filter <- nrow(cleaned_data_small)
+cat("Trials removed as outliers :", initial_row_count - rows_after_trial_filter, "\n")
+
+cat("% of Trials removed as outliers :", (initial_row_count - rows_after_trial_filter)/initial_row_count*100, "\n")
+
+row_count = nrow(cleaned_data_small)
+
+cat("Final trial count:", row_count, "\n")
+
+```{r Add Target Sex column}
+cleaned_data_small <- cleaned_data_small %>%
+  mutate(targetsex = if_else(participant %in% c('pp1', 'pp4','pp7','pp9','pp11','pp10','pp16','pp17','pp21','pp23','pp26','pp28','pp29','pp30','pp32','pp33','pp36','pp37','pp38'), 'Male', 'Female'))
+```
+
+```{r split into male stim and female stim}
+# Filter rows where participant is 'pp1' or 'pp4'
+male_stim_data <- cleaned_data_small %>% filter(targetsex %in% c('Male'))
+
+# Filter rows where participant is 'pp2', 'pp3', 'pp5', or 'pp6'
+female_stim_data <- cleaned_data_small %>% filter(targetsex %in% c('Female'))
+
+```
+
+
+```{r assign target values}
+malenames <- c('095m','098m','100m','108m','110m',"113m",'114m','115m', "116m", "117m",'119m','121m', "123m",'129m','147m','148m','149m',"151m",'152m','154m')
+# Create the 'target' column based on the value in 'targX'
+male_stim_data <- male_stim_data  %>%
+  mutate(target = if_else(TargX == -0.45, l_image, r_image))
+
+male_stim_data <- male_stim_data %>%
+  mutate(targetraw = if_else(TargX == -0.45, l_image, r_image))
+
+# Replace the entire cell with 'masculine' if it contains the word 'masc' etc
+male_stim_data <- male_stim_data %>%
+  mutate(target = if_else(str_detect(target, "masc"), "High Dimorphism", target))
+
+male_stim_data <- male_stim_data %>%
+  mutate(target = if_else(str_detect(target, "fem"), "Low Dimorphism", target))
+
+male_stim_data <- male_stim_data %>%
+  mutate(target = if_else(str_detect(target, "avg"), "Average", target))
+
+male_stim_data <- male_stim_data %>%
+  mutate(target = if_else(str_detect(target, "dist"), "Distinctive", target))
+
+male_stim_data <- male_stim_data %>%
+  mutate(target = if_else(str_detect(target, "/sym"), "Symmetrical", target))
+
+male_stim_data <- male_stim_data %>%
+  mutate(target = if_else(str_detect(target, "/asym"), "Asymmetrical", target))
+
+#Trial remove tracker
+initial_row_count <- nrow(male_stim_data)
+cat("trial count:", initial_row_count, "\n")
+
+#Remove reaction times that are too slow/fast (check values w/ jason)
+male_stim_data <- male_stim_data %>% filter(SaccadicRTms > 50)
+
+male_stim_data <- male_stim_data %>% filter(SaccadicRTms < 2000)
+
+rows_after_trial_filter <- nrow(male_stim_data)
+cat("Trials removed as SRTs too fast or slow :", initial_row_count - rows_after_trial_filter, "\n")
+
+cat("% of Trials removed as SRTs too fast or slow :", (initial_row_count - rows_after_trial_filter)/initial_row_count*100, "\n")
+
+row_count = nrow(male_stim_data)
+
+cat("Final trial count:", row_count, "\n")
+
+
+```
+
+```{r assign target values}
+# Create the 'target' column based on the value in 'targX'
+femalenames <- c('003f','008f','010f','019f','020f',"022f",'024f','025f', "026f", "031f",'044f','045f', "048f",'049f','053f','054f','056f',"063f",'065f','070f') 
+female_stim_data <- female_stim_data  %>%
+  mutate(target = if_else(TargX == -0.45, l_image, r_image))
+
+female_stim_data <- female_stim_data %>%
+  mutate(targetraw = if_else(TargX == -0.45, l_image, r_image))
+
+# Replace the entire cell with 'masculine' if it contains the word 'masc' etc
+female_stim_data <- female_stim_data %>%
+  mutate(target = if_else(str_detect(target, "masc"), "Low Dimorphism", target))
+
+female_stim_data <- female_stim_data %>%
+  mutate(target = if_else(str_detect(target, "fem"), "High Dimorphism", target))
+
+female_stim_data <- female_stim_data %>%
+  mutate(target = if_else(str_detect(target, "avg"), "Average", target))
+
+female_stim_data <- female_stim_data %>%
+  mutate(target = if_else(str_detect(target, "dist"), "Distinctive", target))
+
+female_stim_data <- female_stim_data %>%
+  mutate(target = if_else(str_detect(target, "/sym"), "Symmetrical", target))
+
+female_stim_data <- female_stim_data %>%
+  mutate(target = if_else(str_detect(target, "/asym"), "Asymmetrical", target))
+
+#Trial remove tracker
+initial_row_count <- nrow(female_stim_data)
+cat("trial count:", initial_row_count, "\n")
+
+#Remove reaction times that are too slow/fast (check values w/ jason)
+female_stim_data <- female_stim_data %>% filter(SaccadicRTms > 50)
+
+female_stim_data <- female_stim_data %>% filter(SaccadicRTms < 2000)
+
+rows_after_trial_filter <- nrow(female_stim_data)
+cat("Trials removed as SRTs too fast or slow :", initial_row_count - rows_after_trial_filter, "\n")
+
+cat("% of Trials removed as SRTs too fast or slow :", (initial_row_count - rows_after_trial_filter)/initial_row_count*100, "\n")
+
+row_count = nrow(female_stim_data)
+
+cat("Final trial count:", row_count, "\n")
+
+
+```
+
+```{r}
+cleaned_data_small <- rbind(male_stim_data,female_stim_data)
+```
+
+
+```{r Optional DFs}
+#OPTIONAL
+df_avg <- cleaned_data_small %>% filter(target %in% c("Average", "Distinctive"))
+df_symmetrical <- cleaned_data_small %>% filter(target %in% c("Symmetrical", "Asymmetrical"))
+df_sexdmph <- cleaned_data_small %>% filter(target %in% c("Masculine", "Feminine"))
+
+malestim_df_avg <- male_stim_data %>% filter(target %in% c("Average", "Distinctive"))
+malestim_df_symmetrical <- male_stim_data %>% filter(target %in% c("Symmetrical", "Asymmetrical"))
+malestim_df_sexdmph <- male_stim_data %>% filter(target %in% c("Masculine", "Feminine"))
+
+femalestim_df_avg <- female_stim_data %>% filter(target %in% c("Average", "Distinctive"))
+femalestim_df_symmetrical <- female_stim_data %>% filter(target %in% c("Symmetrical", "Asymmetrical"))
+femalestim_df_sexdmph <- female_stim_data %>% filter(target %in% c("Masculine", "Feminine"))
+
+```
+#################################################################
+                          RATINGS Data
+```{r Ratings dataset}
+Ratings_data <- combined_df %>% select(participant, trial,female, male, Attractiveness.response, Symmetry.response,Beauty.response,Averageness.response, masculinity.response,femininty.response)
+
+Ratings_data <- Ratings_data %>%
+  mutate(targetsex = if_else(participant %in% c('pp1', 'pp4','pp7','pp9','pp11','pp10','pp16','pp17','pp21','pp23','pp26','pp28','pp29','pp30','pp32','pp33','pp36','pp37','pp38'), 'Male', 'Female'))
+
+Ratings_data <- na.omit(Ratings_data)
+
+Ratings_data <- Ratings_data %>%
+  mutate(across(everything(), ~ na_if(., 'None')))
+
+
+for (i in 1:nrow(Ratings_data)) {
+  if (Ratings_data$targetsex[i] == "Male") {
+    Ratings_data$female[i] <- NA
+  } else if (Ratings_data$targetsex[i] == "Female") {
+    Ratings_data$male[i] <- NA
+  }
+}
+
+
+# Create the 'counterpart' column
+Ratings_data$counterpart <- NA
+
+# Initialize a counter to track changes
+changes_made <- 0
+
+
+
+for (i in 1:nrow(Ratings_data)) {
+  # Check if the targetsex is "female"
+  if (Ratings_data$targetsex[i] == "Female") {
+    # Initialize counterpart with the original female value
+    counterpart_value <- Ratings_data$female[i]
+    
+    # Perform the necessary replacements 
+    counterpart_value <- gsub("asym", "TEMP1", counterpart_value)
+    counterpart_value <- gsub("sym", "asym", counterpart_value)
+    counterpart_value <- gsub("TEMP1", "sym", counterpart_value)
+    counterpart_value <- gsub("masc", "TEMP2", counterpart_value)
+    counterpart_value <- gsub("fem", "masc", counterpart_value)
+    counterpart_value <- gsub("TEMP2", "fem", counterpart_value)
+    counterpart_value <- gsub("avg", "TEMP3", counterpart_value)
+    counterpart_value <- gsub("dist", "avg", counterpart_value)
+    counterpart_value <- gsub("TEMP3", "dist", counterpart_value)
+    
+    
+    # Assign the final counterpart value to the dataframe
+    Ratings_data$counterpart[i] <- counterpart_value
+  }
+}
+
+
+for (i in 1:nrow(Ratings_data)) {
+  # Check if the targetsex is "male"
+  if (Ratings_data$targetsex[i] == "Male") {
+    # Initialize counterpart with the original male value
+    counterpart_value <- Ratings_data$male[i]
+    
+    # Perform the necessary replacements 
+    counterpart_value <- gsub("asym", "TEMP1", counterpart_value)
+    counterpart_value <- gsub("sym", "asym", counterpart_value)
+    counterpart_value <- gsub("TEMP1", "sym", counterpart_value)
+    counterpart_value <- gsub("masc", "TEMP2", counterpart_value)
+    counterpart_value <- gsub("fem", "masc", counterpart_value)
+    counterpart_value <- gsub("TEMP2", "fem", counterpart_value)
+    counterpart_value <- gsub("avg", "TEMP3", counterpart_value)
+    counterpart_value <- gsub("dist", "avg", counterpart_value)
+    counterpart_value <- gsub("TEMP3", "dist", counterpart_value)
+    
+    
+    # Assign the final counterpart value to the dataframe
+    Ratings_data$counterpart[i] <- counterpart_value
+  }
+}
+
+# Create a lookup table
+lookup_table <- Ratings_data %>%
+  select(participant, male, Attractiveness.response) %>%
+  rename(counterpart_attractiveness = Attractiveness.response,
+         counterpart = male)
+
+lookup_table2 <- Ratings_data %>%
+  select(participant, female, Attractiveness.response) %>%
+  rename(counterpart_attractiveness = Attractiveness.response,
+         counterpart = female)
+
+# Merge the original data with the lookup table to add the counterpart attractiveness response
+Ratings_data <- Ratings_data %>%
+  left_join(lookup_table, by = c("counterpart", 'participant'))
+
+Ratings_data <- Ratings_data %>%
+  left_join(lookup_table2, by = c("counterpart", 'participant'))
+
+# View the updated dataframe
+print(Ratings_data)
+
+write.csv(Ratings_data, file = 'G:/Experiment/Experiment/ratings_data.csv', row.names = F )
+
+
+
+```
+
+```{r Split ratings into M/F}
+male_stim_ratings_data <- Ratings_data %>% filter(targetsex %in% c('Male'))
+
+# Filter rows where participant is 'pp2', 'pp3', 'pp5', or 'pp6'
+female_stim_ratings_data <- Ratings_data %>% filter(targetsex %in% c('Female'))
+
+female_stim_ratings_data <- female_stim_ratings_data %>% select(-male)
+
+male_stim_ratings_data <- male_stim_ratings_data %>% select(-female)
+
+```
+
+```{r rename to image type}
+
+male_stim_ratings_data <- male_stim_ratings_data %>%
+  mutate(image_type = male)
+
+male_stim_ratings_data <- male_stim_ratings_data %>%
+  mutate(image_type = if_else(str_detect(image_type, "dist"), "Distinctive", image_type))
+
+male_stim_ratings_data <- male_stim_ratings_data %>%
+  mutate(image_type = if_else(str_detect(image_type, "avg"), "Average", image_type))
+
+male_stim_ratings_data <- male_stim_ratings_data %>%
+  mutate(image_type = if_else(str_detect(image_type, "/sym"), "Symmetrical", image_type))
+
+male_stim_ratings_data <- male_stim_ratings_data %>%
+  mutate(image_type = if_else(str_detect(image_type, "asym"), "Asymmetrical", image_type))
+
+male_stim_ratings_data <- male_stim_ratings_data %>%
+  mutate(image_type = if_else(str_detect(image_type, "fem"), "Low Dimorphism", image_type))
+
+male_stim_ratings_data <- male_stim_ratings_data %>%
+  mutate(image_type = if_else(str_detect(image_type, "masc"), "High Dimorphism", image_type))
+
+male_stim_ratings_data <- male_stim_ratings_data %>%
+  mutate(image_type = if_else(str_detect(image_type, "original"), "Original", image_type))
+
+
+#Now female set
+
+female_stim_ratings_data <- female_stim_ratings_data %>%
+  mutate(image_type = female)
+
+female_stim_ratings_data <- female_stim_ratings_data %>%
+  mutate(image_type = if_else(str_detect(image_type, "dist"), "Distinctive", image_type))
+
+female_stim_ratings_data <- female_stim_ratings_data %>%
+  mutate(image_type = if_else(str_detect(image_type, "avg"), "Average", image_type))
+
+female_stim_ratings_data <- female_stim_ratings_data %>%
+  mutate(image_type = if_else(str_detect(image_type, "/sym"), "Symmetrical", image_type))
+
+female_stim_ratings_data <- female_stim_ratings_data %>%
+  mutate(image_type = if_else(str_detect(image_type, "asym"), "Asymmetrical", image_type))
+
+female_stim_ratings_data <- female_stim_ratings_data %>%
+  mutate(image_type = if_else(str_detect(image_type, "fem"), "High Dimorphism", image_type))
+
+female_stim_ratings_data <- female_stim_ratings_data %>%
+  mutate(image_type = if_else(str_detect(image_type, "masc"), "Low Dimorphism", image_type))
+
+female_stim_ratings_data <- female_stim_ratings_data %>%
+  mutate(image_type = if_else(str_detect(image_type, "original"), "Original", image_type))
+
+
+```
+
+```{r Now for file names}
+malenames <- c('095m','098m','100m','108m','110m',"113m",'114m','115m', "116m", "117m",'119m','121m', "123m",'129m','147m','148m','149m',"151m",'152m','154m') # Add all your patterns here
+
+male_stim_ratings_data <- reduce(malenames, function(df, pattern) {
+  df %>% mutate(male = if_else(str_detect(male, pattern), pattern, male))
+}, .init = male_stim_ratings_data)
+
+male_stim_ratings_data <- male_stim_ratings_data %>%
+  select(-counterpart_attractiveness.y) %>%
+  rename(counterpart_attractiveness = counterpart_attractiveness.x)
+
+male_stim_data <- reduce(malenames, function(df, pattern) {
+  df %>% mutate(
+    l_image = if_else(str_detect(l_image, pattern), pattern, l_image),
+    r_image = if_else(str_detect(r_image, pattern), pattern, r_image)
+  )
+}, .init = male_stim_data)
+
+
+femalenames <- c('003f','008f','010f','019f','020f',"022f",'024f','025f', "026f", "031f",'044f','045f', "048f",'049f','053f','054f','056f',"063f",'065f','070f') # Add all your patterns here
+
+female_stim_ratings_data <- reduce(femalenames, function(df, pattern) {
+  df %>% mutate(female = if_else(str_detect(female, pattern), pattern, female))
+}, .init = female_stim_ratings_data)
+
+female_stim_ratings_data <- female_stim_ratings_data %>%
+  select(-counterpart_attractiveness.x) %>%
+  rename(counterpart_attractiveness = counterpart_attractiveness.y)
+
+
+female_stim_data <- reduce(femalenames, function(df, pattern) {
+  df %>% mutate(
+    l_image = if_else(str_detect(l_image, pattern), pattern, l_image),
+    r_image = if_else(str_detect(r_image, pattern), pattern, r_image)
+  )
+}, .init = female_stim_data)
+
+```
+
+```{r means}
+# Define the columns of interest
+columns_of_interest <- c("Attractiveness.response", "Symmetry.response", "Beauty.response", "Averageness.response", "masculinity.response", "femininty.response", 'counterpart_attractiveness')
+
+male_stim_ratings_data[columns_of_interest] <- lapply(male_stim_ratings_data[columns_of_interest], as.numeric)
+
+# Group by 'male' and 'image_type' and calculate means for specified columns
+male_grouped_means <- male_stim_ratings_data %>%
+  group_by(male, image_type) %>%
+  summarize(across(all_of(columns_of_interest), mean, na.rm = TRUE), .groups = 'drop')
+
+# View the resulting dataframe
+print(male_grouped_means)
+```
+
+```{r female means}
+female_stim_ratings_data[columns_of_interest] <- lapply(female_stim_ratings_data[columns_of_interest], as.numeric)
+
+# Group by 'female' and 'image_type' and calculate means for specified columns
+female_grouped_means <- female_stim_ratings_data %>%
+  group_by(female, image_type) %>%
+  summarize(across(all_of(columns_of_interest), mean, na.rm = TRUE), .groups = 'drop')
+
+# View the resulting dataframe
+print(female_grouped_means)
+```
+```{r highlight high values}
+highlight_max_per_female <- function(df, columns) {
+  df %>%
+    group_by(female) %>%
+    mutate(across(all_of(columns), ~ ifelse(.x == max(.x, na.rm = TRUE), paste0(.x, "*"), .x))) %>%
+    ungroup()
+}
+
+highlight_max_per_male <- function(df, columns) {
+  df %>%
+    group_by(male) %>%
+    mutate(across(all_of(columns), ~ ifelse(.x == max(.x, na.rm = TRUE), paste0(.x, "*"), .x))) %>%
+    ungroup()
+}
+
+
+
+
+# Save the highlighted table as a CSV file for females
+write.csv(female_grouped_means, file = "female_rating_means_highlighted_table.csv", row.names = FALSE)
+
+
+# Save the highlighted table as a CSV file for males
+write.csv(male_grouped_means, file = "male_rating_means_highlighted_table.csv", row.names = FALSE)
+
+
+
+
+
+```
+
+```{r RemoveFEMALE}
+face_ratings_female <- read.csv("female_rating_means_highlighted_table.csv")
+
+initial_ratings_count_female <- nrow(face_ratings_female)
+cat("Total ratings count:", initial_ratings_count_female, "\n")
+
+# Function to identify images to be removed based on specific conditions
+identify_images_to_remove <- function(data) {
+  images_to_remove <- data %>%
+    group_by(female) %>%
+    filter(femininty.response[image_type == "Low Dimorphism"] > femininty.response[image_type == "High Dimorphism"] |
+           masculinity.response[image_type == "High Dimorphism"] > masculinity.response[image_type == "Low Dimorphism"] |
+           Symmetry.response[image_type == "Asymmetrical"] > Symmetry.response[image_type == "Symmetrical"] |
+           Averageness.response[image_type == "Distinctive"] > Averageness.response[image_type == "Average"]) %>%
+    pull(female) %>%
+    unique()
+  
+  return(images_to_remove)
+}
+
+# Function to remove identified images from a dataset
+remove_images <- function(data, images_to_remove) {
+  data_cleaned <- data %>%
+    filter(!female %in% images_to_remove)
+  
+  return(data_cleaned)
+}
+
+remove_images_stim_data <- function(data, images_to_remove) {
+  data_cleaned <- data %>%
+    filter(!l_image %in% images_to_remove)
+  
+  return(data_cleaned)
+}
+
+
+# Identify images to be removed from the male and female datasets
+images_to_remove_female <- identify_images_to_remove(face_ratings_female)
+
+print(images_to_remove_female)
+
+# Remove identified images from each dataset
+cleaned_face_ratings_female <- remove_images(face_ratings_female, images_to_remove_female)
+female_stim_data <- remove_images_stim_data(female_stim_data,images_to_remove_female)
+
+rows_after_trial_filter <- nrow(cleaned_face_ratings_female)
+cat("ratings removed as manipulation check was FALSE :", initial_ratings_count_female - rows_after_trial_filter, "\n")
+
+cat("% of Trials removed as manipulation check was FALSE :", (initial_ratings_count_female - rows_after_trial_filter)/initial_ratings_count_female*100, "\n")
+
+initial_ratings_count_female = nrow(cleaned_face_ratings_female)
+
+cat("Final ratings count:", initial_ratings_count_female, "\n")
+
+#  save the cleaned datasets to new CSV files
+write.csv(cleaned_face_ratings_female, "cleaned_face_ratings_female.csv", row.names = FALSE)
+```
+```{r RemoveMALE}
+# Load your datasets
+face_ratings_male <- read.csv("male_rating_means_highlighted_table.csv")
+initial_ratings_count_male <- nrow(face_ratings_male)
+cat("Total ratings count:", initial_ratings_count_male, "\n")
+
+
+# Function to identify images to be removed based on specific conditions
+identify_images_to_remove <- function(data) {
+  images_to_remove <- data %>%
+    group_by(male) %>%
+    filter(femininty.response[image_type == "High Dimorphism"] > femininty.response[image_type == "Low Dimorphism"] |
+           masculinity.response[image_type == "Low Dimorphism"] > masculinity.response[image_type == "High Dimorphism"] |
+           Symmetry.response[image_type == "Asymmetrical"] > Symmetry.response[image_type == "Symmetrical"] |
+           Averageness.response[image_type == "Distinctive"] > Averageness.response[image_type == "Average"]) %>%
+    pull(male) %>%
+    unique()
+  
+  return(images_to_remove)
+}
+
+# Function to remove identified images from a dataset
+remove_images <- function(data, images_to_remove) {
+  data_cleaned <- data %>%
+    filter(!male %in% images_to_remove)
+  
+  return(data_cleaned)
+}
+
+remove_images_stim_data <- function(data, images_to_remove) {
+  data_cleaned <- data %>%
+    filter(!l_image %in% images_to_remove)
+  
+  return(data_cleaned)
+}
+
+
+# Identify images to be removed from the male and male datasets
+images_to_remove_male <- identify_images_to_remove(face_ratings_male)
+
+print(images_to_remove_male)
+
+# Remove identified images from each dataset
+cleaned_face_ratings_male <- remove_images(face_ratings_male, images_to_remove_male)
+male_stim_data <- remove_images_stim_data(male_stim_data,images_to_remove_male)
+
+rows_after_trial_filter <- nrow(cleaned_face_ratings_male)
+cat("ratings removed as manipulation check was FALSE :", initial_ratings_count_male - rows_after_trial_filter, "\n")
+
+cat("% of Trials removed as manipulation check was FALSE :", (initial_ratings_count_male - rows_after_trial_filter)/initial_ratings_count_male*100, "\n")
+
+initial_ratings_count_male = nrow(cleaned_face_ratings_male)
+
+cat("Final ratings count:", initial_ratings_count_male, "\n")
+
+# save the cleaned datasets to new CSV files
+write.csv(cleaned_face_ratings_male, "cleaned_face_ratings_male.csv", row.names = FALSE)
+
+# Merge the original data with the lookup table to add the counterpart attractiveness response
+cleaned_face_ratings_female <- cleaned_face_ratings_female %>%
+  rename(ID = female)
+cleaned_face_ratings_male <- cleaned_face_ratings_male %>%
+  rename(ID = male)
+
+Ratings_data_cleaned <- cleaned_face_ratings_male %>%
+  rbind(cleaned_face_ratings_female)
+
+Ratings_data <- Ratings_data %>%
+  left_join(lookup_table2, by = c("counterpart", 'participant'))
+
+# View the updated dataframe
+print(Ratings_data)
+write.csv(Ratings_data_cleaned, file = 'G:/Experiment/Experiment/ratings_data_cleaned.csv', row.names = F)
+write.csv(Ratings_data, file = 'G:/Experiment/Experiment/ratings_data.csv', row.names = F)
+```
+```{r add attracitveness and beauty ratings to the DF}
+
+# Select relevant columns and rename them for consistency
+categorized_ratings <- male_stim_ratings_data %>%
+  select(participant, Attractiveness.response, counterpart_attractiveness, Beauty.response, male, image_type) %>%
+  rename(l_image = male, target = image_type)
+
+# Merge the categorized ratings with the main dataframe based on the participant key
+male_stim_data <- male_stim_data %>%
+  left_join(categorized_ratings, by = c('participant', 'l_image', 'target'))
+
+# Print the first few rows of the updated data
+head(male_stim_data)
+```
+
+```{r}
+
+# Select relevant columns and rename them for consistency
+categorized_ratings <- female_stim_ratings_data %>%
+  select(participant, Attractiveness.response, counterpart_attractiveness, Beauty.response, female, image_type) %>%
+  rename(l_image = female, target = image_type)
+
+# Merge the categorized ratings with the main dataframe based on the participant key
+female_stim_data <- female_stim_data %>%
+  left_join(categorized_ratings, by = c('participant', 'l_image', 'target'))
+
+# Print the first few rows of the updated data
+head(female_stim_data)
+```
+
+```{r}
+cleaned_data_removed_ratings <- rbind(male_stim_data, female_stim_data)
+```
+
+```{r}
+write.csv(cleaned_data, file = 'G:/Experiment/Experiment/cleaned_data.csv', row.names = F)
+
+write.csv(cleaned_data_removed_ratings, file = 'G:/Experiment/Experiment/cleaned_data_removed_ratings.csv', row.names = F )
+
+write.csv(female_stim_data, file = 'G:/Experiment/Experiment/female_stim_data.csv', row.names = F)
+
+write.csv(male_stim_data, file = 'G:/Experiment/Experiment/male_stim_data.csv', row.names = F )
+```
